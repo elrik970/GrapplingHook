@@ -1,0 +1,642 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+using Cinemachine;
+using UnityEngine.SceneManagement;
+
+public class Player : MonoBehaviour
+{
+    // Start is called before the first frame update
+    public Rigidbody2D rb;
+    public float MovementTime;
+    [SerializeField] private bool right = false;
+    private float StartSpeed;
+    private bool jumping = false;
+    public float CloseToGround;
+    private float CoyoteTime;
+    public float WallJumpCastDistance = 0.1f;
+    public CinemachineConfiner confiner;
+    public GameObject CurrentBoundingBox;
+    public float CoyoteMaxTime;
+    public float WallJumpGrav;
+    public LayerMask GroundLayerMask;
+    public float VariableJumpHeightMult;
+    private RaycastHit2D GroundHit;
+    private RaycastHit2D WallHit;
+    private RaycastHit2D WallHitRight;
+    private bool CanJump = true;
+    public float fallingGravity;
+    private bool WallJumping;
+    public float ApexZone = 1f;
+    private bool otherJump = false;
+    private float CantMovePostWallJump = 0f;
+    public float CantMovePostWallJumpMax;
+    public float WallJumpSpeed;
+    public float WallJumpDeacceleration;
+    public float ApexGravity = 1f;
+    public bool OnGround;
+    private float GroundCount;
+    public Transform particleFloat;
+    private bool WallJumpingLeft;
+    private bool WallJumped = false;
+    public float WallJumpForce;
+    private bool WallJumpingRight;
+    public float risingGravity;
+    public GrapplingHookActivate GrapplingHookActivate;
+    public float JumpForce;
+    private float targetSpeed;
+    [SerializeField] private float MovementAcceleration;
+    public float MaxSpeed;
+    public float MaxJumpBufferTime;
+    private float JumpBufferTime;
+    [SerializeField] private bool left = false;
+    public float SlowDown;
+    public Camera Camera;
+    private PlayerMovement movement;
+    void Awake() {
+        movement = new PlayerMovement();
+    }
+    void OnEnable() {
+        movement.Enable();
+    }
+
+    void OnDisable() {
+        if (movement != null) movement.Disable();
+    }
+    void Start()
+    {
+        rb = GetComponent<Rigidbody2D> ();
+        Camera = Camera.main;
+        transform.position = new Vector3(PlayerPrefs.GetFloat("RespawnSpotX"),PlayerPrefs.GetFloat("RespawnSpotY"),0f);
+        confiner = GameObject.FindWithTag("Cinemachine").GetComponent<CinemachineConfiner>();
+        movement.Player.Jump.performed += OnJump;
+        movement.Player.Right.performed += OnWalkRight;
+        movement.Player.Left.performed += OnWalkLeft;
+    }
+
+    // Update is called once per frame
+    void WallCast () {
+        WallHit = Physics2D.Raycast(transform.position, Vector2.left, WallJumpCastDistance,GroundLayerMask);
+        WallHitRight = Physics2D.Raycast(transform.position, Vector2.right, WallJumpCastDistance,GroundLayerMask);
+        if (WallHit.collider != null||WallHitRight.collider != null) {
+            if (!GrapplingHookActivate.Grappling&&(left||right)&&rb.velocity.y < 0f) {
+                rb.velocity = new Vector2( rb.velocity.x, Mathf.Clamp(rb.velocity.y,-WallJumpSpeed,WallJumpSpeed));
+                // PARTICLES
+                
+                if (particleFloat.GetComponent<ParticleSystem>().emission.enabled == false) {
+                    particleFloat.GetComponent <ParticleSystem>().Play ();
+                }
+                
+                ParticleSystem.EmissionModule emFloat = particleFloat.GetComponent<ParticleSystem>().emission;
+                emFloat.enabled = true;
+            }
+            CanJump = true;
+            WallJumping = true;
+            if (WallHit.collider != null) {
+                WallJumpingLeft = true;
+            }
+            else if (WallHitRight.collider != null) {
+                WallJumpingRight = true;
+            }
+            
+            
+        }
+        else {
+            CanJump = false;
+            WallJumpingRight = false;
+            WallJumpingLeft = false;
+            WallJumping = false;
+            ParticleSystem.EmissionModule emFloat = particleFloat.GetComponent<ParticleSystem>().emission;
+            emFloat.enabled = false;
+        }
+    }
+    void MoveDown () {
+
+        float SpeedDif = targetSpeed - rb.velocity.y;
+        float movement = SpeedDif * WallJumpDeacceleration;
+        rb.AddForce(movement*Vector2.up,ForceMode2D.Impulse);
+    }
+    void Move () {
+
+        float SpeedDif = targetSpeed - rb.velocity.x;
+        float movement = SpeedDif * MovementAcceleration;
+        rb.AddForce(movement*Vector2.right,ForceMode2D.Impulse);
+    }
+    void MoveRight () {
+        if (rb.velocity.x < targetSpeed) {
+
+            float SpeedDif = targetSpeed - rb.velocity.x;
+            float movement = SpeedDif * MovementAcceleration;
+            rb.AddForce(movement*Vector2.right,ForceMode2D.Impulse);
+        }
+    }
+    void MoveLeft () {
+        if (rb.velocity.x > targetSpeed) {
+            float SpeedDif = targetSpeed - rb.velocity.x;
+            float movement = SpeedDif * MovementAcceleration;
+            rb.AddForce(movement*Vector2.right,ForceMode2D.Impulse);
+        }
+    }
+    void Update()
+    {
+        JumpBufferTime += Time.deltaTime;
+        if (WallJumped) {
+            CantMovePostWallJump += Time.deltaTime;
+        }
+        GroundHit = Physics2D.Raycast(transform.position, Vector2.down, CloseToGround,GroundLayerMask);
+        if (GroundHit.collider != null) {
+            OnGround = true;
+            CoyoteTime = 0f;
+        }
+        else {
+            CoyoteTime+=Time.deltaTime;
+            if (CoyoteTime > CoyoteMaxTime) {
+                OnGround = false;
+            }
+        }
+        // If Grappling Have rising Gravity
+        
+    }
+    void FixedUpdate () {
+        
+        if (jumping && JumpBufferTime<MaxJumpBufferTime&&OnGround) {
+            Jump();
+        }
+        if (CantMovePostWallJump > CantMovePostWallJumpMax) {
+        
+            if (right) {
+                    targetSpeed = MaxSpeed;
+                    MoveRight();
+                
+                
+            }
+            if (left) {
+                    targetSpeed = -MaxSpeed;
+                    MoveLeft();
+                
+            }
+        }
+        if (!right&&!left&&CantMovePostWallJump>CantMovePostWallJumpMax) {
+            if (GrapplingHookActivate.instantiated == null) {
+                targetSpeed = 0f;
+                Move();
+            }
+            
+        }
+        if (!OnGround) {
+            WallCast();
+        }
+        if (GrapplingHookActivate.Grappling) {
+            rb.gravityScale = risingGravity;
+        }
+        else if (rb.velocity.y > -ApexZone&& rb.velocity.y < ApexZone/2f){
+            rb.gravityScale = ApexGravity;
+        }
+        else if (rb.velocity.y < -ApexZone&&!WallJumping) {
+            rb.gravityScale = fallingGravity;
+        }
+        if (OnGround) {
+            WallJumped = false;
+            CanJump = true;
+            WallJumping = false;
+            CantMovePostWallJump = CantMovePostWallJumpMax+1f;
+            rb.gravityScale = risingGravity;
+            ParticleSystem.EmissionModule emFloat = particleFloat.GetComponent<ParticleSystem>().emission;
+            emFloat.enabled = false;
+        }
+    }
+    void OnWalkRight(InputAction.CallbackContext context) {
+        right = ! right;
+    }
+    void OnWalkLeft(InputAction.CallbackContext context) {
+        left = ! left;
+    }
+    void Jump() {
+
+        JumpBufferTime = 0f;
+        if (CanJump||otherJump) {
+            if (jumping) {
+                JumpBufferTime = MaxJumpBufferTime;
+                CanJump = false;
+                otherJump = false;
+                rb.gravityScale = risingGravity;
+                rb.velocity = new Vector2(rb.velocity.x,0f);
+                rb.AddForce(Vector3.up * JumpForce, ForceMode2D.Impulse);
+            }
+        }
+        if (!jumping) {
+            if (rb.velocity.y > 0f) {
+                rb.gravityScale = fallingGravity;
+                rb.AddForce((rb.velocity.y/VariableJumpHeightMult)*Vector2.down,ForceMode2D.Impulse);
+            }
+            
+        } 
+    }
+    void OnJump(InputAction.CallbackContext context) {
+        jumping = ! jumping;
+        if (jumping) {
+            if (WallJumpingLeft) {
+                rb.velocity = new Vector3(rb.velocity.y,0f);
+                WallJumped = true;
+                CantMovePostWallJump = 0f;
+                rb.AddForce(Vector2.right * WallJumpForce,ForceMode2D.Impulse);
+                Jump();
+            }
+            if (WallJumpingRight) {
+                rb.velocity = new Vector3(rb.velocity.y,0f);
+                CantMovePostWallJump = 0f;
+                WallJumped = true;
+                rb.AddForce(Vector2.left * WallJumpForce,ForceMode2D.Impulse);
+                Jump();
+            }
+            if (!WallJumpingLeft&&!WallJumpingRight) {
+                Jump();
+            }
+        }
+        else {
+            Jump();
+        }
+    } 
+    void OnCollisionEnter2D(Collision2D col) {
+        if (col.gameObject.tag == "Kill") {
+            // transform.position = new Vector3(PlayerPrefs.GetFloat("RespawnSpotX"),PlayerPrefs.GetFloat("RespawnSpotY"),0f);
+            // rb.velocity = Vector3.zero;
+            SceneManager.LoadScene(SceneManager.GetActiveScene().name);
+        }
+    }
+    void OnTriggerEnter2D(Collider2D col) {
+        if (col.gameObject.tag == "Kill") {
+            // transform.position = new Vector3(PlayerPrefs.GetFloat("RespawnSpotX"),PlayerPrefs.GetFloat("RespawnSpotY"),0f);
+            // rb.velocity = Vector3.zero;
+            SceneManager.LoadScene(SceneManager.GetActiveScene().name);
+        }
+        if (col.gameObject.tag == "Bounds") {
+            confiner.InvalidatePathCache();
+
+            confiner.m_BoundingShape2D = col.gameObject.GetComponent<Collider2D>();
+            CurrentBoundingBox = col.gameObject;
+        }
+        if (col.gameObject.tag == "RegainJump") {
+            otherJump = true;
+            Destroy(col.gameObject);
+        }
+    }
+    void OnTrigerExit2D(Collider2D col) {
+        if (col.gameObject.tag == "Bounds") {
+            confiner.InvalidatePathCache();
+            confiner.m_BoundingShape2D = null;
+        }
+        
+    }
+}
+
+
+
+
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class GrapplingHookActivate : MonoBehaviour
+{
+    // Start is called before the first frame update
+    private RaycastHit2D hit;
+    public Camera Camera;
+    public Player Player;
+    public bool Grappling = false;
+    public GameObject instantiated;
+    public float AboveGrapplingHook = 2f;
+    public LayerMask layerMask;
+    public GameObject grapplingPoint;
+    public Transform GrapplingSpot;
+    public bool Missed = false;
+    public float MaxFallSpeed;
+    private GameObject hitObject;
+    public float GrapplingHookGrabLength;
+    public float GrapplingLength;
+    private Vector3 CursorPos;
+    public LineRenderer LineRenderer;
+    public SpringJoint2D springJoint2D;
+    public Rigidbody2D rb;
+    public Vector3 StartingHitPos;
+    private PlayerMovement movement;
+    void Awake() {
+        movement = new PlayerMovement();
+    }
+    void OnEnable() {
+        movement.Enable();
+    }
+
+    void OnDisable() {
+        if (movement != null) movement.Disable();
+    }
+    void Start()
+    {
+        LineRenderer = Player.GetComponent<LineRenderer> ();
+        rb = Player.GetComponent<Rigidbody2D> ();
+        springJoint2D = Player.GetComponent<SpringJoint2D> ();
+        Camera = Camera.main;
+        movement.Player.Clicking.performed += OnClick;
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        if (rb.velocity.y < MaxFallSpeed) {
+            rb.velocity = new Vector2(rb.velocity.x,MaxFallSpeed);
+        }
+        if (Missed) {
+            CursorPos = Camera.ScreenToWorldPoint(Input.mousePosition);
+            CursorPos = new Vector3(CursorPos.x,CursorPos.y,0f);
+            hit = Physics2D.Raycast(Player.transform.position, transform.right, GrapplingHookGrabLength,~layerMask);
+            if (hit.collider != null ) {
+                // springJoint2D.enabled = true;
+                // Debug.Log(hit.point);
+                // springJoint2D.anchor = hit.point;
+                instantiated = (GameObject)GameObject.Instantiate(grapplingPoint, hit.point, Quaternion.identity);
+                instantiated.GetComponent<SpringJoint2D>().connectedBody = Player.GetComponent<Rigidbody2D>();
+                LineRenderer.SetPosition(1,hit.point);
+                
+                hitObject = hit.transform.gameObject;
+                
+                instantiated.GetComponent<SpringJoint2D>().distance = Mathf.Clamp(Vector3.Distance(transform.position,hit.point), 0f, GrapplingLength);
+                Missed = false;
+                StartingHitPos = instantiated.transform.position;
+                Grappling = true;
+            }
+            else {
+                LineRenderer.SetPosition(1,GrapplingSpot.transform.position);
+            }
+            
+        }
+        CursorPos = Camera.ScreenToWorldPoint(Input.mousePosition);
+        CursorPos = new Vector3(CursorPos.x,CursorPos.y,0f);
+        transform.right = CursorPos-transform.position;
+        LineRenderer.SetPosition(0,new Vector3(Player.transform.position.x,Player.transform.position.y,-1f));
+        if (Grappling && instantiated != null) {
+            LineRenderer.SetPosition(1,instantiated.transform.position);
+            // FOLLOW ANY MOVEMENT
+            if (hitObject.tag != "TileMap") {
+                instantiated.transform.position = hitObject.transform.position;
+            }
+            // Don't Spring unless you are too FAR not too CLOSE
+            if (Player.transform.position.y < instantiated.transform.position.y + AboveGrapplingHook) {
+                instantiated.GetComponent<SpringJoint2D>().distance = Mathf.Clamp(Vector3.Distance(transform.position,hit.point), 0f, GrapplingLength);
+            }
+            // else {
+            //     instantiated.GetComponent<SpringJoint2D>().distance = Mathf.Lerp(instantiated.GetComponent<SpringJoint2D>().distance,0f,Time.deltaTime);
+            // }
+        }
+        // springJoint2D.connectedAnchor = transform.position;
+    }
+    
+    void OnClick(InputAction.CallbackContext context) {
+        Grappling = ! Grappling;
+        if (Grappling) {
+            LineRenderer.enabled = true;
+            CursorPos = Camera.ScreenToWorldPoint(Input.mousePosition);
+            CursorPos = new Vector3(CursorPos.x,CursorPos.y,0f);
+            hit = Physics2D.Raycast(Player.transform.position, transform.right, GrapplingHookGrabLength,~layerMask);
+            if (hit.collider != null ) {
+
+                hitObject = hit.transform.gameObject;
+                
+                instantiated = (GameObject)GameObject.Instantiate(grapplingPoint, hit.point, Quaternion.identity);
+                instantiated.GetComponent<SpringJoint2D>().connectedBody = Player.GetComponent<Rigidbody2D>();
+                LineRenderer.SetPosition(1,hit.point);
+                StartingHitPos = instantiated.transform.position;
+                instantiated.GetComponent<SpringJoint2D>().distance = Mathf.Clamp(Vector3.Distance(transform.position,hit.point), 0f, GrapplingLength);
+            }
+            else {
+                Missed = true;
+                LineRenderer.SetPosition(1,GrapplingSpot.transform.position);
+            }
+            
+            
+        }
+        else {
+            // springJoint2D.enabled = false;
+            LineRenderer.enabled = false;
+            Missed = false;
+            Destroy(instantiated);
+        }
+        
+    }
+}
+
+
+
+
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class Editing : MonoBehaviour
+{
+    // Start is called before the first frame update
+    private float tempFallingGravity;
+    private float tempMaxSpeed;
+    private float tempRisingGravity;
+    public Player Player;
+    public PlaceTile PlaceTile;
+    void Start()
+    {
+        PlaceTile = GameObject.FindWithTag("Cursor").GetComponent<PlaceTile>();
+        Player = GameObject.FindWithTag("Player").GetComponent<Player>();
+        tempRisingGravity = Player.GetComponent<Player> ().risingGravity;
+        tempFallingGravity = Player.GetComponent<Player> ().fallingGravity;
+        tempMaxSpeed = Player.GetComponent<Player> ().MaxSpeed;
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        
+    }
+    public void NotEditing() {
+        PlaceTile.editing = ! PlaceTile.editing;
+        if (PlaceTile.editing == true) {
+            Player.GetComponent<Player> ().risingGravity = 0f;
+            Player.GetComponent<Player> ().MaxSpeed = 0f;
+            Player.GetComponent<Player> ().fallingGravity = 0f;
+            Player.rb.gravityScale = 0f;
+        }
+        else {
+            Player.GetComponent<Collider2D> () .enabled = true;
+            Player.GetComponent<Player>().rb.velocity = Vector2.zero;
+            Player.GetComponent<Player> ().risingGravity = tempRisingGravity;
+            Player.GetComponent<Player> ().fallingGravity = tempFallingGravity;
+            Player.GetComponent<Player> ().rb.gravityScale = tempFallingGravity;
+            Player.GetComponent<Player> ().MaxSpeed = tempMaxSpeed;
+            
+            Player.transform.position = new Vector3(23f,0f,0f);
+        }
+    }
+}
+
+
+
+
+
+
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class TurnOffAllChildren : MonoBehaviour
+{
+    // Start is called before the first frame update
+    public bool On = false;
+    private bool didOn = false;
+    private bool didOff = false;
+    void Start()
+    {
+        
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        if (On&&didOn == false) {
+            GetComponent<SpriteRenderer>().enabled = true;
+            int count = transform.childCount;
+            for(int i = 0; i < count; i++)
+            {
+                Transform Child = transform.GetChild(i);
+                if (Child.GetComponent <SpriteRenderer>() != null) {
+                    Child.GetComponent<SpriteRenderer>().enabled = true;
+                }
+            }
+            didOn = true;
+            didOff = false;
+        } 
+        if (!On&&didOff == false) {
+            GetComponent<SpriteRenderer>().enabled = false;
+            int count = transform.childCount;
+            for(int i = 0; i < count; i++)
+            {
+                Transform Child = transform.GetChild(i);
+                if (Child.GetComponent <SpriteRenderer>() != null) {
+                    Child.GetComponent<SpriteRenderer>().enabled = false;
+                }
+            }
+            didOff = true;
+            didOn = false;
+        }
+    }
+        
+}
+
+
+
+
+
+
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+public class CursorSpot : MonoBehaviour
+{
+    // Start is called before the first frame update
+    public Camera Camera;
+    private RaycastHit2D hit;
+    public Transform Controller;
+    public TurnOffAllChildren TurnOffAllChildren;
+    private Vector3 StartingClickPos;
+    public LayerMask layerMask;
+    [SerializeField] private float MinimumDistance;
+    [SerializeField] private bool clicking = false;
+    private PlayerMovement movement;
+    void Awake() {
+        movement = new PlayerMovement();
+    }
+    void OnEnable() {
+        movement.Enable();
+    }
+
+    void OnDisable() {
+        if (movement != null) movement.Disable();
+    }
+    void Start()
+    {
+        Camera = Camera.main;
+        movement.Player.TouchScreenClick.performed += OnClick;
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        if (clicking) {
+            if (Vector3.Distance(Camera.ScreenToWorldPoint(Input.mousePosition),StartingClickPos) > MinimumDistance) {
+                Vector3 CursorPos = Camera.ScreenToWorldPoint(Input.mousePosition);
+                CursorPos = new Vector3(CursorPos.x,CursorPos.y,Controller.transform.position.z);
+                Controller.transform.right = CursorPos - StartingClickPos;
+            }
+        }
+    }
+    void OnClick(InputAction.CallbackContext context) {
+        clicking = ! clicking;
+        if (clicking) {
+            Vector3 CursorPos = Camera.ScreenToWorldPoint(Input.mousePosition);
+            CursorPos = new Vector3(CursorPos.x,CursorPos.y,10f);
+            hit = Physics2D.Raycast(CursorPos, Vector3.forward, 10f, layerMask);
+            if (hit.collider != null) {
+                TurnOffAllChildren.On = true;
+                StartingClickPos = hit.point;
+                TurnOffAllChildren.transform.position = StartingClickPos;
+            }
+        }
+        else {
+            TurnOffAllChildren.On = false;
+        }
+    }
+}
+
+
+
+
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class RocketShipCode : MonoBehaviour
+{
+    // Start is called before the first frame update
+    private Rigidbody2D rb;
+    public Transform RotationPoint;
+    [SerializeField] private float TempForce;
+    void Start()
+    {
+        rb = GetComponent<Rigidbody2D>();
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        
+    }
+    void OnCollisionEnter2D(Collision2D col) {
+        if (col.gameObject.tag != "Player") {
+            rb.velocity = Vector2.zero;
+        }
+        
+        if (col.gameObject.tag == "GrapplingPoint") {
+            rb.AddForce(RotationPoint.transform.right*TempForce,ForceMode2D.Impulse);
+        }
+        if (col.gameObject.layer == 30) {
+            Destroy(gameObject);
+        }
+        
+    }
+    void OnTriggerEnter2D(Collider2D col) {
+        if (col.gameObject.tag == "StopRocket") {
+            rb.velocity = Vector2.zero;
+        }
+    }
+}
+
+
